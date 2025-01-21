@@ -14,7 +14,7 @@ import {
   ChatCompletionMessageParam
 } from 'openai/resources'
 
-import { CompletionsParams } from '.'
+import { ChunkCallbackData, CompletionsParams } from '.'
 import BaseProvider from './BaseProvider'
 
 export default class OpenAIProvider extends BaseProvider {
@@ -117,6 +117,20 @@ export default class OpenAIProvider extends BaseProvider {
     } as ChatCompletionMessageParam
   }
 
+  private getTemperature(assistant: Assistant, model: Model) {
+    const isOpenAIo1 = model.id.startsWith('o1')
+
+    if (isOpenAIo1) {
+      return undefined
+    }
+
+    if (model.provider === 'deepseek' && model.id === 'deepseek-reasoner') {
+      return undefined
+    }
+
+    return assistant?.settings?.temperature
+  }
+
   async completions({ messages, assistant, onChunk, onFilterMessages }: CompletionsParams): Promise<void> {
     const defaultModel = getDefaultModel()
     const model = assistant.model || defaultModel
@@ -127,6 +141,12 @@ export default class OpenAIProvider extends BaseProvider {
 
     const _messages = filterContextMessages(takeRight(messages, contextCount + 1))
     onFilterMessages(_messages)
+
+    if (model.id === 'deepseek-reasoner') {
+      if (_messages[0]?.role !== 'user') {
+        userMessages.push({ role: 'user', content: '' })
+      }
+    }
 
     for (const message of _messages) {
       userMessages.push(await this.getMessageParam(message, model))
@@ -150,7 +170,7 @@ export default class OpenAIProvider extends BaseProvider {
       messages: [isOpenAIo1 ? undefined : systemMessage, ...userMessages].filter(
         Boolean
       ) as ChatCompletionMessageParam[],
-      temperature: isOpenAIo1 ? 1 : assistant?.settings?.temperature,
+      temperature: this.getTemperature(assistant, model),
       top_p: assistant?.settings?.topP,
       max_tokens: maxTokens,
       keep_alive: this.keepAliveTime,
@@ -176,11 +196,14 @@ export default class OpenAIProvider extends BaseProvider {
       if (window.keyv.get(EVENT_NAMES.CHAT_COMPLETION_PAUSED)) {
         break
       }
+
       if (time_first_token_millsec == 0) {
         time_first_token_millsec = new Date().getTime() - start_time_millsec
       }
+
       const time_completion_millsec = new Date().getTime() - start_time_millsec
-      onChunk({
+
+      const callbackData: ChunkCallbackData = {
         text: chunk.choices[0]?.delta?.content || '',
         usage: chunk.usage,
         metrics: {
@@ -188,7 +211,19 @@ export default class OpenAIProvider extends BaseProvider {
           time_completion_millsec,
           time_first_token_millsec
         }
-      })
+      }
+
+      // @ts-ignore key is not typed
+      const reasoning_content = chunk.choices[0]?.delta?.reasoning_content
+
+      if (reasoning_content) {
+        callbackData.thought = {
+          text: reasoning_content,
+          time: new Date().getTime() - start_time_millsec
+        }
+      }
+
+      onChunk(callbackData)
     }
   }
 

@@ -47,6 +47,10 @@ export type Message = {
   assistantId: string
   role: 'user' | 'assistant'
   content: string
+  thought?: {
+    text: string
+    time: number
+  }
   translatedContent?: string
   topicId: string
   createdAt: string
